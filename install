@@ -1,0 +1,222 @@
+sudo apt install openssh-server
+sudo apt install curl -y 
+sudo curl -fsSL https://get.docker.com | sudo sh 
+sudo systemctl status docker
+
+sudo docker pull portainer-ce:latest
+sudo docker pull gitlab/gitlab-ce:latest
+sudo docker pull gitlab/gitlab-runner:latest
+sudo docker pull docker:24.0.5
+sudo docker pull docker:24.0.5-dind 
+sudo docker pull node:20-alpine 
+sudo docker pull nginx:stable-alpine
+sudo docker pull mariadb:latest
+sudo docker pull phpmyadmin/phpmyadmin:latest
+sudo docker pull registry:2
+
+sudo docker volume create portainer_data
+sudo docker run -d -p 9443:9443 --name --restart=always -v /var/run/docker.sock:/var/run/docker.sock -v portainer_data:/data portainer/portainer-ce:latest
+sudo docker network create app_net
+sudo docker volume create gitlab_config
+sudo docker volume create gitlab_data
+sudo docker volume create gitlab_logs
+sudo docker volume create gitlab_runner_config
+
+version: '3.8'
+services: 
+  gitlab:
+    image: gitlab/gitlab-ce:latest
+    container_name: gitlab
+    restart: always
+    hostname: '192.168.32.38'
+    environment:
+      GITLAB_OMNIBUS_CONFIG: |
+        external_url 'http://192.168.32.38:8888'
+        gitlab_rails['gitlab_shell_ssh_port'] = 2222
+    ports:
+      - '8888:8888'
+      - '2222:22'
+    volumes:
+      - 'gitlab_config:/etc/gitlab'
+      - 'gitlab_logs:/var/log/gitlab'
+      - 'gitlab_data:/var/opt/gitlab'
+    networks:
+      - app_net
+  
+  gitlab-runner
+    image: gitlab/gitlab-runner:latest
+    container_name: gitlab-runner
+    restart: always
+    volumes:
+      - gitlab_runner_config:/etc/gitlab-runner
+      - /var/run/docker.sock:/var/run/docker.sock 
+    networks:
+      - app_net
+
+networks:
+  app_net:
+
+volumes:
+  gitlab_config:
+  gitlab_data:
+  gitlab_logs:
+  gitlab_runner_config:
+
+sudo docker exec -it gitlab /bin/bash
+> gitlab-rails console 
+> user = User.where(id: 1).first
+> user.password = 'pntc@2025'
+> user.password_confirmation = 'pntc@2025'
+> user.save!
+
+sudo docker exec -it gitlab-runner gitlab-runner register
+> http://192.168.32.38:8888
+> token 
+> docker-runner
+> skip
+> docker
+> docker:latest
+
+sudo nano /etc/docker/daemon.json
+{
+ "insecure-registries": ["172.16.39.192:5000"]
+}
+
+sudo nano /var/lib/docker/volumes/gitlab_runner_config/_data/config.toml
+pull_policy = "if-not-present"
+false > true
+"/var/run/docker.sock:/var/run/docker.sock"
+
+stages:
+  - build
+  - deploy
+
+vairables:
+  REGISTRY_URL: "172.16.39.192:5000"
+  DOCKER_TLS_CERTDIR: ""
+
+image: docker:24.0.5
+
+build_backend:
+  stage: build
+  services: 
+    - name: docker:24.0.5-dind
+      command: ["--insecure-registry=172.16.39.193:5000"]
+  script:
+    - echo "build backend ... "
+    - cd backend
+    - docker build -t $REGISTRY_URL/social-backend:latest .
+    - ceho "push backend ... "
+    - docker push $REGISTRY_URL/social-backend:latest
+  only:
+    - main
+build_frontend:
+  stage: build
+  services: 
+    - name: docker:24.0.5-dind
+      command: ["--insecure-registry=172.16.39.193:5000"]
+  script:
+    - echo "build frontend ... "
+    - cd frontend
+    - docker build -t $REGISTRY_URL/social-frontend:latest .
+    - ceho "push frontend ... "
+    - docker push $REGISTRY_URL/social-frontend:latest
+  only:
+    - main
+deploy_production:
+  stage: deploy
+  script:
+    - echo "Deploy to Production ... "
+    - docker-compose down 
+    - docker-compose pull
+    - docker-compose up -d
+  only:
+    - main
+
+FROM node:20-alpine as build-stage
+WORKDIR /app
+COPY package*.json ./
+RUN npm install
+COPY . .
+RUN npm run build 
+
+FROM nginx:stable-alpine as production-stage
+COPY --from=build-stage /app/dist /usr/share/nginx/html
+EXPOSE 80
+CMD ["nginx", "-g", "daemon off;"]
+
+FROM node:20-alpine
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --only=production
+COPY . .
+RUN addgroup -S app && adduser -S -G app app\
+    && chown -R app:app /app
+USER app
+EXPOSE 3000
+CMD ["node", "app.js"]
+
+version: '3.8'
+services: 
+  mariadb:
+    image: mariadb:latest
+    container_name: social-mariadb
+    restart: always
+    ports:
+      - '3306:3306'
+    environment:
+      MYSQL_ROOT_PASSWORD: asdf
+      MYSQL_PASSWORD: asdf
+      MYSQL_USER: user
+      MYSQL_NAME: social
+    volumes:
+      - mariadb_data:/var/lib/mysql
+    networks:
+      - app-network
+  phpmyadmin:
+    image: phpmyadmin/phpmyadmin-ce:latest
+    container_name: social-phpmyadmin
+    restart: always
+    ports:
+      - '8080:80'
+    environment
+      PMA_HOST: mariadb
+      PMA_USER: root
+      PMA_PASSWORD: asdf
+    depends_on:
+      - mariadb
+    networks:
+      - app-network
+  backend-app:
+    image: 172.16.39.192:5000/social-backend:latest
+    container_name: backend-app
+    restart: always
+    ports:
+      - '3000:3000'
+    environment:
+      - PORT=3000
+      - DB_HOST=mariadb
+      - DB_USER=root
+      - DB_PASSWORD=asdf
+      - DB_NAME=social
+    depends_on:
+      - mariadb
+    networks:
+      - app_net
+  frontend:
+    image: 172.16.39.193:5000/social-frontend:latest
+    container_name: frontend
+    restart: always
+    ports: 
+      - '8084:80'
+    depends_on:
+      - backend-app
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge
+
+volumes:
+  mariadb_data:

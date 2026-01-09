@@ -1,0 +1,68 @@
+version: '3.8'
+
+services:
+  mariadb:
+    image: mariadb:latest
+    container_name: social_mariadb
+    restart: always 
+    ports:
+      - '3306:3306'
+    environment:
+      MYSQL_ROOT_PASSWORD: asdf
+      MYSQL_PASSWORD: asdf
+      MYSQL_USER: user
+      MYSQL_DATABASE: social 
+    volumes:
+      - mariadb_data:/var/lib/mysql
+    networks:
+      - app-network
+
+  phpmyadmin:
+    image: phpmyadmin/phpmyadmin:latest
+    container_name: social_phpmyadmin
+    restart: always
+    ports:
+      - '8080:80'
+    environment:
+      PMA_HOST: mariadb
+      PMA_USER: root
+      PMA_PASSWORD: asdf
+    depends_on:
+      - mariadb 
+    networks:
+      - app-network
+
+  backend-app:
+    image: 172.16.39.193:5000/social-backend:latest
+    container_name: social-backend
+    restart: always
+    ports:
+      - '3000:3000'
+    environment:
+      - PORT=3000
+      - DB_HOST=mariadb
+      - DB_NAME=social
+      - DB_USER=root
+      - DB_PASS=asdf
+    depends_on:
+      - mariadb
+    networks:
+      - app-network
+  
+  frontend:
+    image: 172.16.39.193:5000/social-frontend:latest
+    container_name: frontend
+    restart: always
+    ports:
+      - '8085:80'
+    depends_on:
+      - backend-app
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge
+  
+volumes:
+  mariadb_data:
