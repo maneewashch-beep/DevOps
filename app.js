@@ -29,90 +29,48 @@ let lastDeviceData = {
     timestamp: 0 // เก็บเวลาล่าสุดที่เป็น Milliseconds
 };
 
-// 1. API รับข้อมูลจาก Arduino (POST)
+// Helper: เช็คว่าออนไลน์หรือไม่ (ถ้าเวลาต่างกันไม่เกิน 10 วินาที = True)
+const checkOnline = (ts) => (Date.now() - ts) < 10000;
+
 app.post('/api/data', (req, res) => {
     const { temperature, humidity } = req.body;
-
-    // อัปเดตเวลาล่าสุดทันทีที่มีข้อมูลเข้ามา
-    lastDeviceData = {
-        temperature: temperature,
-        humidity: humidity,
-        timestamp: Date.now() // บันทึกเวลาปัจจุบัน (Heartbeat)
-    };
-
+    // อัปเดต RAM
+    lastDeviceData = { temperature, humidity, timestamp: Date.now() }; 
     console.log(`Received: ${temperature}°C / ${humidity}% (Heartbeat Update)`);
 
-    const sql = 'INSERT INTO sensor_logs (temperature, humidity, created_at) VALUES (?, ?, NOW())';
-    
-    db.query(sql, [temperature, humidity], (err, result) => {
-        if (err) {
-            console.error(err);
-            return res.status(500).send('Database Error');
-        }
+    db.query('INSERT INTO sensor_logs (temperature, humidity, created_at) VALUES (?, ?, NOW())', [temperature, humidity], (err) => {
+        if (err) return res.status(500).send('Database Error');
         
-        // ส่งสถานะ ONLINE ทันทีเมื่อข้อมูลเข้า
-        io.emit('sensor_update', { 
-            status: 'ONLINE', 
-            temperature: temperature, 
-            humidity: humidity,
-            timestamp: new Date()
-        });
-
+        // Emit ทันที (ใช้ spread operator ... ย่อการเขียน object)
+        io.emit('sensor_update', { status: 'ONLINE', ...lastDeviceData, timestamp: new Date() });
         res.status(201).send('Data Saved');
     });
 });
 
 app.get('/api/status', (req, res) => {
-    const now = Date.now();
-    const diff = now - lastDeviceData.timestamp;
-    const isOnline = diff < 10000; 
+    // ฟังก์ชันช่วยจัด Format ข้อมูลส่งกลับ
+    const reply = (data, ts) => res.json({ ...data, created_at: new Date(ts), status: checkOnline(ts) ? 'ONLINE' : 'OFFLINE' });
 
-    if (lastDeviceData.timestamp !== 0) {
-        res.json({
-            temperature: lastDeviceData.temperature,
-            humidity: lastDeviceData.humidity,
-            created_at: new Date(lastDeviceData.timestamp),
-            status: isOnline ? 'ONLINE' : 'OFFLINE'
-        });
-    } else {
-        // ถ้า RAM ว่างเปล่า (เพิ่งเปิด Server) ให้ไปดูใน DB แทน
-        const sql = 'SELECT * FROM sensor_logs ORDER BY created_at DESC LIMIT 1';
-        db.query(sql, (err, results) => {
-            if (err) return res.status(500).send(err);
-            if (results.length > 0) {
-                const latest = results[0];
-                const dbTime = new Date(latest.created_at).getTime();
-                const dbDiff = Date.now() - dbTime;
-                
-                res.json({
-                    ...latest,
-                    status: (dbDiff < 10000) ? 'ONLINE' : 'OFFLINE'
-                });
-            } else {
-                res.json({ status: 'NO_DATA' });
-            }
-        });
-    }
+    // 1. เช็ค RAM ก่อน
+    if (lastDeviceData.timestamp !== 0) return reply(lastDeviceData, lastDeviceData.timestamp);
+
+    // 2. ถ้า RAM ว่าง ให้เช็ค DB
+    db.query('SELECT * FROM sensor_logs ORDER BY created_at DESC LIMIT 1', (err, results) => {
+        if (err) return res.status(500).send(err);
+        if (!results.length) return res.json({ status: 'NO_DATA' });
+        
+        reply(results[0], new Date(results[0].created_at).getTime());
+    });
 });
 
-// --- 🔥 ส่วนที่เพิ่ม: ระบบ Ping Monitor (Server ทำงานเองทุก 5 วินาที) ---
+// Ping Monitor: เช็คทุก 5 วินาที
 setInterval(() => {
-    const now = Date.now();
-    const diff = now - lastDeviceData.timestamp;
-
-    // ถ้าไม่มีข้อมูลมาเกิน 10 วินาที (เผื่อดีเลย์นิดหน่อย)
-    if (diff > 10000 && lastDeviceData.timestamp !== 0) {
-        // ประกาศให้หน้าเว็บรู้ว่า "OFFLINE แล้วนะ"
+    // ถ้ามีข้อมูลใน RAM และเวลาเกิน 10 วิ -> แจ้ง OFFLINE
+    if (lastDeviceData.timestamp !== 0 && !checkOnline(lastDeviceData.timestamp)) {
         console.log("⚠️ Device Offline detected!");
-        io.emit('sensor_update', {
-            status: 'OFFLINE',
-            temperature: lastDeviceData.temperature,
-            humidity: lastDeviceData.humidity,
-            timestamp: new Date(lastDeviceData.timestamp)
-        });
-    } 
-    // ถ้ายังปกติ ไม่ต้องส่งอะไร (ลดภาระ Network) หรือจะส่ง ONLINE ย้ำก็ได้
-}, 5000); // ทำงานทุก 5 วินาที
+        io.emit('sensor_update', { status: 'OFFLINE', ...lastDeviceData, timestamp: new Date(lastDeviceData.timestamp) });
+    }
+}, 5000);
 
 const PORT = 3000;
 server.listen(PORT, '0.0.0.0', () => {
