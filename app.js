@@ -1,34 +1,3 @@
-const express = require('express');
-const mysql = require('mysql2');
-const cors = require('cors');
-const bodyParser = require('body-parser');
-const http = require('http');
-const { Server } = require("socket.io");
-
-const app = express();
-const server = http.createServer(app);
-const io = new Server(server, {
-    cors: { origin: "*" }
-});
-
-app.use(cors());
-app.use(bodyParser.json());
-
-const db = mysql.createPool({
-    host: 'localhost',
-    user: 'root',
-    password: 'asdf',
-    database: 'iot_monitor',
-    port: 3306
-});
-
-// --- 🔥 ส่วนที่เพิ่ม: ตัวแปรจำค่าล่าสุดใน RAM (เพื่อให้ตรวจสอบได้เร็ว ไม่ต้องดึง DB) ---
-let lastDeviceData = {
-    temperature: 0,
-    humidity: 0,
-    timestamp: 0 // เก็บเวลาล่าสุดที่เป็น Milliseconds
-};
-
 // Helper: เช็คว่าออนไลน์หรือไม่ (ถ้าเวลาต่างกันไม่เกิน 10 วินาที = True)
 const checkOnline = (ts) => (Date.now() - ts) < 10000;
 
@@ -70,10 +39,4 @@ setInterval(() => {
         console.log("⚠️ Device Offline detected!");
         io.emit('sensor_update', { status: 'OFFLINE', ...lastDeviceData, timestamp: new Date(lastDeviceData.timestamp) });
     }
-}, 5000);
-
-const PORT = 3000;
-server.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server running on port ${PORT}`);
-    console.log(`Waiting for Arduino Heartbeat...`);
-});
+}, 5000
